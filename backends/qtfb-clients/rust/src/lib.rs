@@ -1,4 +1,4 @@
-use anyhow::{Error, Result, anyhow};
+use anyhow::{Error, Result, anyhow, bail};
 use libc::{
     c_void, mmap, munmap, sockaddr_un, socket, AF_UNIX, MAP_FAILED, MAP_SHARED, PROT_READ,
     PROT_WRITE, SOCK_SEQPACKET,
@@ -22,6 +22,10 @@ pub mod constants {
     pub const MESSAGE_USER_INPUT: u8 = 4;
     pub const MESSAGE_SET_REFRESH_MODE: u8 = 5;
     pub const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
+    pub const MESSAGE_DEVICE_STATE_CHANGED: u8 = 7;
+    pub const MESSAGE_DEVICE_STATE_INIT: u8 = 8;
+
+    pub const STATE_CHANGED_REASON_ROTATION: i32 = 0;
 
     pub const UPDATE_ALL: i32 = 0;
     pub const UPDATE_PARTIAL: i32 = 1;
@@ -29,7 +33,7 @@ pub mod constants {
     pub const FBFMT_RM2FB: u8 = 0;
     pub const FBFMT_RMPP_RGB888: u8 = 1;
     pub const FBFMT_RMPP_RGBA8888: u8 = 2;
-    
+
     #[repr(i32)]
     #[derive(Debug, Clone, Copy)]
     pub enum RefreshMode {
@@ -89,6 +93,25 @@ pub struct UserInputContents {
     d: i32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+union RotationDeviceStateChangeContents {
+    rotation: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union DeviceStateChangeContentsData {
+    rotation: RotationDeviceStateChangeContents,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DeviceStateChangeContents {
+    reason: i32,
+    data: DeviceStateChangeContentsData,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Null;
 
@@ -111,11 +134,18 @@ struct ClientMessage {
 union ServerMessageContents {
     init: InitMessageResponseContents,
     user_input: UserInputContents,
+    device_state_change: DeviceStateChangeContents,
+}
+
+#[derive(Clone, Debug)]
+pub enum DeviceStateChange {
+    Rotation{ rotation: i32 },
 }
 
 #[derive(Clone, Debug)]
 pub enum UserFacingServerMessageContents {
     UserInput(UserInputContents),
+    DeviceStateChange(DeviceStateChange),
 }
 
 #[repr(C)]
@@ -127,6 +157,18 @@ struct ServerMessage {
 pub struct ClientConnection<'a> {
     fd: RawFd,
     pub shm: &'a mut [u8],
+}
+
+fn parse_as_device_state_change(contents: &ServerMessageContents) -> Result<UserFacingServerMessageContents>{
+    let dsc: &DeviceStateChangeContents = unsafe { &contents.device_state_change };
+    match dsc.reason {
+        constants::STATE_CHANGED_REASON_ROTATION => {
+            Ok(UserFacingServerMessageContents::DeviceStateChange(
+                DeviceStateChange::Rotation{ rotation: unsafe { dsc.data.rotation.rotation } }
+            ))
+        },
+        other => bail!("Unknown device state change reason: {other}"),
+    }
 }
 
 impl<'a> ClientConnection<'a> {
@@ -280,6 +322,8 @@ impl<'a> ClientConnection<'a> {
                         server_message.contents.user_input
                     )
                 ),
+                constants::MESSAGE_DEVICE_STATE_INIT => parse_as_device_state_change(&server_message.contents),
+                constants::MESSAGE_DEVICE_STATE_CHANGED => parse_as_device_state_change(&server_message.contents),
                 msg_type => Err(anyhow!("Unknown server message type {msg_type}"))
             }
         }

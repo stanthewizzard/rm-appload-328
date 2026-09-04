@@ -32,10 +32,27 @@ void FBController::paint(QPainter *painter) {
     // Do we have an SHM associated?
     if(this->image && this->_active) {
         // Cool. Paint it.
+        painter->resetTransform();
+        switch(fbRotation) {
+            case Deg0: break;
+            case Deg90L:
+                painter->rotate(-90);
+                break;
+            case Deg90R:
+                painter->rotate(90);
+                break;
+            case Deg180:
+                painter->rotate(180);
+                break;
+        }
         if(allowScaling && fillMode != Pad) {
-            painter->drawImage(this->convertQTFBRectToScreen(QRect(image->rect())), *image, image->rect());
+            QRect rect = translateToCounteractRotation(convertQTFBRectToScreen(image->rect()));
+            painter->drawImage(rect, *image, image->rect());
         } else {
-            painter->drawImage((width() - image->width()) / 2, (height() - image->height()) / 2, *image);
+            float _width = width(), _height = height();
+            if(fbRotation == Deg90L || fbRotation == Deg90R)
+                std::swap(_width, _height);
+            painter->drawImage(translateToCounteractRotation(QRect((_width - image->width()) / 2, (_height - image->height()) / 2, width(), height())), *image);
         }
     } else {
         /*
@@ -84,111 +101,108 @@ void FBController::markedUpdate(const QRect &rect) {
     }
 }
 
-QPoint FBController::convertPointToQTFBPixels(const QPointF &input) {
-    if(allowScaling && image) {
-        int fbWidth = image->width();
-        int fbHeight = image->height();
+std::optional<QPoint> FBController::convertPointToQTFBPixels(const QPointF &input) {
+    QRect fbRect = convertQTFBRectToScreen(image->rect());
+    float screenWidth = width(), screenHeight = height();
+    if(fbRotation == Deg90L || fbRotation == Deg90R) {
+        std::swap(screenWidth, screenHeight);
+        fbRect = QRect(fbRect.y(), fbRect.x(), fbRect.height(), fbRect.width());
+    }
+    if(!fbRect.contains(input.toPoint())) return {};
+    QPointF center = fbRect.center();
+    QTransform transform = QTransform().translate(center.x(), center.y());
+    switch(fbRotation) {
+        case Deg0: break;
+        case Deg90L:
+            transform.rotate(90);
+            break;
+        case Deg90R:
+            transform.rotate(-90);
+            break;
+        case Deg180:
+            transform.rotate(180);
+            break;
+    }
+    transform.scale(
+        screenWidth / ((float) fbRect.width()),
+        screenHeight / ((float) fbRect.height())
+    );
+    transform.translate(-center.x(), -center.y());
+    return transform.map(input).toPoint();
+}
 
-        if(fillMode == Stretch) {
-            return QPoint(
-                (input.x() * fbWidth ) / this->width(),
-                (input.y() * fbHeight) / this->height()
-            );
-        }
-        else if(fillMode == Pad) {
-            return QPoint(
-                input.x() - (width()  - fbWidth ) / 2,
-                input.y() - (height() - fbHeight) / 2
-            );
-        }
-
-        float fbAspectRatio = (float)fbWidth / fbHeight;
-        bool  widthOrHeight = fbAspectRatio > (float)width() / height();
-
-        if(   (fillMode == PreserveAspectFit  &&  widthOrHeight)
-           || (fillMode == PreserveAspectCrop && !widthOrHeight)) {
-            // scale to fill width, calculate height
-            float calculatedHeight = width() / fbAspectRatio;
-            return QPoint(
-                (input.x() * fbWidth) / width(),
-                ((input.y() - 0.5 * (height() - calculatedHeight)) * fbWidth) / width());
-        } else {
-            // scale to fill height, calculate width
-            float calculatedWidth = height() * fbAspectRatio;
-            return QPoint(
-                ((input.x() - 0.5 * (width() - calculatedWidth)) * fbHeight) / height(),
-                (input.y() * fbHeight) / height());
-        }
-    } else {
-        return QPoint(input.x(), input.y());
+QRect FBController::translateToCounteractRotation(const QRect &input) {
+    switch(fbRotation) {
+        default:
+        case Deg0: return input;
+        case Deg180: return QRect(input.x() - width(), input.y() - height(), input.width(), input.height());
+        case Deg90L: return QRect(input.x() - height(), input.y(), input.width(), input.height());
+        case Deg90R: return QRect(input.x(), input.y() - width(), input.width(), input.height());
     }
 }
 
 QRect FBController::convertQTFBRectToScreen(const QRect &input) {
+    float screenWidth = width(), screenHeight = height();
+    if(fbRotation == Deg90L || fbRotation == Deg90R) {
+        std::swap(screenWidth, screenHeight);
+    }
+
+    QRect beforeRotation;
     if(allowScaling && fillMode != Pad) {
         int fbWidth = image->width();
         int fbHeight = image->height();
 
         if(fillMode == Stretch) {
             return QRect(
-                (input.left() * width()) / image->width(),
-                (input.top() * height()) / image->height(),
-                (input.width() * width()) / image->width(),
-                (input.height() * height()) / image->height()
+                (input.left() * screenWidth) / image->width(),
+                (input.top() * screenHeight) / image->height(),
+                (input.width() * screenWidth) / image->width(),
+                (input.height() * screenHeight) / image->height()
             );
         }
 
         float fbAspectRatio = (float)fbWidth / fbHeight;
-        bool  widthOrHeight = fbAspectRatio > (float)width() / height();
+        bool  widthOrHeight = fbAspectRatio > (float)screenWidth / screenHeight;
 
         if(   (fillMode == PreserveAspectFit  &&  widthOrHeight)
            || (fillMode == PreserveAspectCrop && !widthOrHeight)) {
             // scale to fill width, calculate height
-            float calculatedHeight = width() / fbAspectRatio;
+            float calculatedHeight = screenWidth / fbAspectRatio;
             return QRect(
-                (input.left()   * width()) / fbWidth,
-                (input.top()    * width()) / fbWidth + (int)(0.5 * (height() - calculatedHeight)),
-                (input.width()  * width() + fbWidth - 1) / fbWidth, // round width up
-                (input.height() * width() + fbWidth - 1) / fbWidth  // round height up
+                (input.left()   * screenWidth) / fbWidth,
+                (input.top()    * screenWidth) / fbWidth + (int)(0.5 * (screenHeight - calculatedHeight)),
+                (input.width()  * screenWidth + fbWidth - 1) / fbWidth, // round width up
+                (input.height() * screenWidth + fbWidth - 1) / fbWidth  // round height up
             );
         } else {
             // scale to fill height, calculate width
-            float calculatedWidth = height() * fbAspectRatio;
+            float calculatedWidth = screenHeight * fbAspectRatio;
             return QRect(
-                (input.left()   * height()) / fbHeight + (int)(0.5 * (width() - calculatedWidth)),
-                (input.top()    * height()) / fbHeight,
-                (input.width()  * height() + fbHeight - 1) / fbHeight, // round width up
-                (input.height() * height() + fbHeight - 1) / fbHeight  // round height up
+                (input.left()   * screenHeight) / fbHeight + (int)(0.5 * (screenWidth - calculatedWidth)),
+                (input.top()    * screenHeight) / fbHeight,
+                (input.width()  * screenHeight + fbHeight - 1) / fbHeight, // round width up
+                (input.height() * screenHeight + fbHeight - 1) / fbHeight  // round height up
             );
         }
     } else {
-        return input.translated((width() - image->width()) / 2, (height() - image->height()) / 2);
+        return input.translated((screenWidth - image->width()) / 2, (screenHeight - image->height()) / 2);
     }
 }
 
 void FBController::mouseEvent(QMouseEvent *me, int inputType) {
-    bool reject = false;
     if(framebufferID != -1 && !me->points().isEmpty()) {
         const QEventPoint &point = me->points()[0];
-        QPoint conv = convertPointToQTFBPixels(point.position());
-
-        // only forward and accept events that fall into the framebuffer display region
-        if(image && (conv.x() < 0 || conv.x() > image->width() || conv.y() < 0 || conv.y() > image->height())) {
-            reject = true;
-        } else {
+        if(auto conv = convertPointToQTFBPixels(point.position())) {
             qtfb::UserInputContents packet {
                 .inputType = inputType,
                 .devId = 0, // TODO - differentiate between pen / eraser.
-                .x = conv.x(),
-                .y = conv.y(),
+                .x = conv.value().x(),
+                .y = conv.value().y(),
                 .d = (int) (point.pressure() * 100.0),
             };
-            qtfb::management::forwardUserInput(framebufferID, &packet);
+            qtfb::management::forwardUserInput(framebufferID, packet);
+            me->accept();
         }
-    }
-
-    if(!reject) {
-        me->accept();
     }
 }
 
@@ -213,7 +227,7 @@ static inline void sendKeyEvent(int key, int pkt, qtfb::FBKey framebufferID) {
             .y = 0,
             .d = 0,
         };
-        qtfb::management::forwardUserInput(framebufferID, &packet);
+        qtfb::management::forwardUserInput(framebufferID, packet);
     }
 }
 
@@ -242,13 +256,19 @@ void FBController::touchEvent(QTouchEvent *me) {
             QDEBUG << "QTFB Force Refresh";
         }
         for(const QEventPoint& point : me->points()) {
-            QPoint conv = convertPointToQTFBPixels(point.position());
-            QPoint pressConv = convertPointToQTFBPixels(point.pressPosition());
+            int x = 0, y = 0;
+
+            if(auto conv = convertPointToQTFBPixels(point.position())) {
+                x = conv.value().x();
+                y = conv.value().y();
+            }
+
+            auto pressConv = convertPointToQTFBPixels(point.pressPosition());
             qtfb::UserInputContents packet {
                 .inputType = INPUT_TOUCH_PRESS,
                 .devId = point.id(),
-                .x = conv.x(),
-                .y = conv.y(),
+                .x = x,
+                .y = y,
                 .d = 0,
             };
             switch(point.state()) {
@@ -275,8 +295,8 @@ void FBController::touchEvent(QTouchEvent *me) {
                 default: break;
             }
             // only forward touch points to the client that started inside the framebuffer area
-            if(image && pressConv.x() > 0 && pressConv.x() < image->width() && pressConv.y() > 0 && pressConv.y() < image->height()) {
-                qtfb::management::forwardUserInput(framebufferID, &packet);
+            if(image && pressConv) {
+                qtfb::management::forwardUserInput(framebufferID, packet);
             }
         }
     }
@@ -317,4 +337,26 @@ QSize FBController::framebufferSize() const {
         return QSize();
     }
     return image->size();
+}
+
+qtfb::DeviceStateChangedContents FBController::formRotationChangePacket() {
+    qtfb::DeviceStateChangedContents dscc = {
+        .reason = STATE_CHANGED_REASON_ROTATION,
+        .rotation = {
+            (int) (sendFlippedRotationToClient ? (fbRotation == Deg90L ? Deg90R : fbRotation == Deg90R ? Deg90L : fbRotation) : fbRotation),
+        }
+    };
+    return dscc;
+}
+
+std::vector<struct qtfb::DeviceStateChangedContents> FBController::buildInitialStatePackets() {
+    return { formRotationChangePacket() };
+}
+
+void FBController::setFbRotation(Rotation rotation) {
+    if(rotation < 0 || rotation > 3) return;
+    this->fbRotation = rotation;
+    emit fbRotationChanged();
+    qtfb::management::sendDeviceStateChange(framebufferID, formRotationChangePacket());
+    markedUpdate();
 }

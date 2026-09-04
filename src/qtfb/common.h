@@ -21,6 +21,8 @@
 #define MESSAGE_USERINPUT 4
 #define MESSAGE_SET_REFRESH_MODE 5
 #define MESSAGE_REQUEST_FULL_REFRESH 6
+#define MESSAGE_DEVICE_STATE_CHANGED 7
+#define MESSAGE_DEVICE_STATE_INIT 8
 
 #define FBFMT_RM2FB 0
 #define FBFMT_RMPP_RGB888 1
@@ -75,6 +77,13 @@
 #define INPUT_VKB_HOME 0x86
 #define INPUT_VKB_END 0x87
 
+#define STATE_CHANGED_REASON_ROTATION 0
+
+#define ROTATION_0 0
+#define ROTATION_L90 1
+#define ROTATION_R90 2
+#define ROTATION_180 3
+
 namespace qtfb {
     typedef int FBKey;
 
@@ -106,6 +115,15 @@ namespace qtfb {
         int x, y, d;
     };
 
+    struct DeviceStateChangedContents {
+        int reason;
+        union {
+            struct {
+                int rotation;
+            } rotation;
+        };
+    };
+
     struct ClientMessage {
         uint8_t type;
         union {
@@ -123,6 +141,7 @@ namespace qtfb {
         union {
             struct InitMessageResponseContents init;
             struct UserInputContents userInput;
+            struct DeviceStateChangedContents deviceStateChanged;
         };
     };
 }
